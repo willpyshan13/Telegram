@@ -91,10 +91,15 @@ public class TimerDrawable extends Drawable {
                 } else if (timeString.length() > 2) {
                     timeString = "c";
                 }
-            } else {
+            } else if (time < 60 * 60 * 24 * 364){
                 timeString = "" + value / 60 / 60 / 24 / 30;
                 if (timeString.length() < 2) {
                     timeString += LocaleController.getString("SecretChatTimerMonths", R.string.SecretChatTimerMonths);
+                }
+            } else {
+                timeString = "" + value / 60 / 60 / 24 / 364;
+                if (timeString.length() < 2) {
+                    timeString += LocaleController.getString("SecretChatTimerYears", R.string.SecretChatTimerYears);
                 }
             }
 
@@ -150,8 +155,9 @@ public class TimerDrawable extends Drawable {
                     currentTtlIcon.setColorFilter(new PorterDuffColorFilter(iconColor, PorterDuff.Mode.MULTIPLY));
                 }
             }
-            AndroidUtilities.rectTmp2.set(getBounds());
-            AndroidUtilities.rectTmp2.inset(AndroidUtilities.dp(1f), AndroidUtilities.dp(1f));
+            AndroidUtilities.rectTmp2.set((int) (getBounds().centerX() - AndroidUtilities.dp(10.5f)), (int) (getBounds().centerY() - AndroidUtilities.dp(10.5f)),
+                    (int) (getBounds().centerX() - AndroidUtilities.dp(10.5f)) + currentTtlIcon.getIntrinsicWidth(),
+                    (int) (getBounds().centerY() - AndroidUtilities.dp(10.5f)) + currentTtlIcon.getIntrinsicHeight());
             currentTtlIcon.setBounds(AndroidUtilities.rectTmp2);
             currentTtlIcon.draw(canvas);
         }
