@@ -13,9 +13,11 @@ import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.LaunchActivity;
+import org.telegram.ui.Storage.CacheModel;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
@@ -34,6 +36,7 @@ public class FileLoadOperation {
     long streamOffset;
 
     public static volatile DispatchQueue filesQueue = new DispatchQueue("writeFileQueue");
+    private boolean forceSmallChunk;
 
     public void setStream(FileLoadOperationStream stream, boolean streamPriority, long streamOffset) {
         this.stream = stream;
@@ -47,6 +50,7 @@ public class FileLoadOperation {
         private TLRPC.TL_upload_file response;
         private TLRPC.TL_upload_webFile responseWeb;
         private TLRPC.TL_upload_cdnFile responseCdn;
+        private boolean forceSmallChunk;
     }
 
     public static class Range {
@@ -186,6 +190,7 @@ public class FileLoadOperation {
     private File tempPath;
     private boolean isForceRequest;
     private int priority;
+    private FilePathDatabase.FileMeta fileMetadata;
 
     private boolean ungzip;
 
@@ -203,7 +208,7 @@ public class FileLoadOperation {
     }
 
     private void updateParams() {
-        if (MessagesController.getInstance(currentAccount).getfileExperimentalParams) {
+        if (MessagesController.getInstance(currentAccount).getfileExperimentalParams && !forceSmallChunk) {
             downloadChunkSizeBig = 1024 * 512;
             maxDownloadRequests = 8;
             maxDownloadRequestsBig = 8;
@@ -218,6 +223,7 @@ public class FileLoadOperation {
     public FileLoadOperation(ImageLocation imageLocation, Object parent, String extension, long size) {
         updateParams();
         parentObject = parent;
+        fileMetadata = FileLoader.getFileMetadataFromParent(currentAccount, parentObject);
         isStream = imageLocation.imageType == FileLoader.IMAGE_TYPE_ANIMATION;
         if (imageLocation.isEncrypted()) {
             location = new TLRPC.TL_inputEncryptedFileLocation();
@@ -324,6 +330,7 @@ public class FileLoadOperation {
         updateParams();
         try {
             parentObject = parent;
+            fileMetadata = FileLoader.getFileMetadataFromParent(currentAccount, parentObject);
             if (documentLocation instanceof TLRPC.TL_documentEncrypted) {
                 location = new TLRPC.TL_inputEncryptedFileLocation();
                 location.id = documentLocation.id;
@@ -827,6 +834,7 @@ public class FileLoadOperation {
             finalFileExist = false;
         }
 
+
         if (!finalFileExist) {
             cacheFileTemp = new File(tempPath, fileNameTemp);
             if (ungzip) {
@@ -962,6 +970,11 @@ public class FileLoadOperation {
                 } catch (Exception e) {
                     FileLog.e(e);
                 }
+            }
+
+            if (fileMetadata != null) {
+                FileLoader.getInstance(currentAccount).getFileDatabase().saveFileDialogId(cacheFileParts, fileMetadata);
+                FileLoader.getInstance(currentAccount).getFileDatabase().saveFileDialogId(cacheFileTemp, fileMetadata);
             }
 
             if (cacheFileTemp.exists()) {
@@ -1281,6 +1294,14 @@ public class FileLoadOperation {
             if (BuildVars.DEBUG_VERSION) {
                 FileLog.d("finished preloading file to " + cacheFileTemp + " loaded " + totalPreloadedBytes + " of " + totalBytesCount);
             }
+            if (fileMetadata != null) {
+                if (cacheFileTemp != null) {
+                    FileLoader.getInstance(currentAccount).getFileDatabase().removeFiles(Collections.singletonList(new CacheModel.FileInfo(cacheFileTemp)));
+                }
+                if (cacheFileParts != null) {
+                    FileLoader.getInstance(currentAccount).getFileDatabase().removeFiles(Collections.singletonList(new CacheModel.FileInfo(cacheFileParts)));
+                }
+            }
             delegate.didFinishLoadingFile(FileLoadOperation.this, cacheFileFinal);
         } else {
             final File cacheIvTempFinal = cacheIvTemp;
@@ -1310,7 +1331,7 @@ public class FileLoadOperation {
                         } catch (ZipException zipException) {
                             ungzip = false;
                         } catch (Throwable e) {
-                            FileLog.e(e);
+                            FileLog.e(e, !(e instanceof FileNotFoundException));
                             if (BuildVars.LOGS_ENABLED) {
                                 FileLog.e("unable to ungzip temp = " + cacheFileTempFinal + " to final = " + cacheFileFinal);
                             }
@@ -1738,7 +1759,14 @@ public class FileLoadOperation {
                 }
             }
         } else {
-            if (error.text.contains("FILE_MIGRATE_")) {
+            if (error.text.contains("LIMIT_INVALID") && !requestInfo.forceSmallChunk) {
+                if (!forceSmallChunk) {
+                    forceSmallChunk = true;
+                    currentDownloadChunkSize = 0;
+                    pause();
+                    start();
+                }
+            } else if (error.text.contains("FILE_MIGRATE_")) {
                 String errorMsg = error.text.replace("FILE_MIGRATE_", "");
                 Scanner scanner = new Scanner(errorMsg);
                 scanner.useDelimiter("");
@@ -1975,6 +2003,7 @@ public class FileLoadOperation {
             final RequestInfo requestInfo = new RequestInfo();
             requestInfos.add(requestInfo);
             requestInfo.offset = downloadOffset;
+            requestInfo.forceSmallChunk = forceSmallChunk;
 
             if (!isPreloadVideoOperation && supportsPreloading && preloadStream != null && preloadedBytesRanges != null) {
                 PreloadRange range = preloadedBytesRanges.get(requestInfo.offset);
@@ -2014,7 +2043,7 @@ public class FileLoadOperation {
                     continue;
                 }
             }
-
+            requestInfo.forceSmallChunk = forceSmallChunk;
             requestInfo.requestToken = ConnectionsManager.getInstance(currentAccount).sendRequest(request, (response, error) -> {
                 if (!requestInfos.contains(requestInfo)) {
                     return;
